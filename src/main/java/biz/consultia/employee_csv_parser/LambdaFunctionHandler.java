@@ -3,7 +3,9 @@ package biz.consultia.employee_csv_parser;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 
 import com.amazonaws.regions.Regions;
 import com.amazonaws.services.dynamodbv2.AmazonDynamoDB;
@@ -32,13 +34,14 @@ public class LambdaFunctionHandler implements RequestHandler<S3Event, String> {
     public String handleRequest(S3Event event, Context context) {
         context.getLogger().log("Received event: " + event);
 
-        // Get the object from the event and show its content type
+        // 1. Get the bucket name and its object key from the S3 event
         String bucket = event.getRecords().get(0).getS3().getBucket().getName();
         String key = event.getRecords().get(0).getS3().getObject().getKey();
         
         S3Object response = null;
         String contentType;
         try {
+        	// 2. Get the object from Amazon S3
             response = s3.getObject(new GetObjectRequest(bucket, key));
             contentType = response.getObjectMetadata().getContentType();
             context.getLogger().log("CONTENT TYPE: " + contentType);            
@@ -50,27 +53,34 @@ public class LambdaFunctionHandler implements RequestHandler<S3Event, String> {
             throw e;
         }
         
-        parseCSVS3Object(response);
+        // 3. Parse the S3 object content
+        List<String[]> rows = parseCSVS3Object(response);
+        
+        // 4. Insert each element into the DynamoDB table
+        rows.forEach(row -> {
+        	putItemInTable(row[0], row[1], row[2]);
+        });
         
 		return contentType;
     }
 
-	private void parseCSVS3Object(S3Object data) {
+	private List<String[]> parseCSVS3Object(S3Object data) {
 		BufferedReader reader = new BufferedReader(new InputStreamReader(data.getObjectContent()));
         
 		try {
 			String line;
+			List<String[]> rows = new ArrayList<>();
 			while ((line = reader.readLine()) != null) {
-				String[] row = line.split(",");
-				putItemInTable(dynamoDBClient, row[0], row[1], row[2]);
+				rows.add(line.split(","));
 			}
+			return rows;
 		} 
 		catch (IOException e) {
 			throw new RuntimeException(e);
 		}
 	}
 
-	public void putItemInTable(AmazonDynamoDB ddb, String employeeId, String employeeName, String employeeSalary) {
+	public void putItemInTable(String employeeId, String employeeName, String employeeSalary) {
 
 		HashMap<String, AttributeValue> itemValues = new HashMap<>();
 		itemValues.put("id", new AttributeValue().withN(employeeId));
@@ -80,7 +90,7 @@ public class LambdaFunctionHandler implements RequestHandler<S3Event, String> {
 		PutItemRequest request = new PutItemRequest(DYNAMO_TABLE_NAME, itemValues);
 
 		try {
-			ddb.putItem(request);
+			dynamoDBClient.putItem(request);
 			System.out.println(DYNAMO_TABLE_NAME + " was successfully updated");
 		} 
 		catch (ResourceNotFoundException e) {
